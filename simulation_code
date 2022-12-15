@@ -1,0 +1,191 @@
+#this script contains the code for simulating REEF survey data and applying different imputation methods to a set of models
+#the code is designed to be run as a single block, and is designed to be run with Tidyverse and mcgv installed on the machine
+
+set.seed(123)#sets seed for reproducability
+require(tidyverse)
+require(mgcv)
+
+SFMA_to_num <- function(data){
+  Ftable <- tibble(None = sum(data ==0), 
+                   Single = sum(data ==1), 
+                   Few = sum(data ==2),
+                   Many = sum(data ==3),
+                   Abundant = sum(data ==4))#creates summary table of values in each category 
+  
+  if(sum(Ftable[2:4]) != 0){
+    AvgF <- sum(Ftable[2:4]*c(2, 4.16, 10)/sum(Ftable[2:4]))
+  }
+  if(sum(Ftable[3:5]) != 0){
+    AvgM <- sum(Ftable[3:5]*c(11, 33.8, 100)/sum(Ftable[3:5]))
+  }
+  if(sum(Ftable[4:5]) != 0){
+    AvgA <- sum(Ftable[4:5]*c(200, 348)/sum(Ftable[4:5]))
+  }#series of if statements check if there are any values within category, return average value for that category if so
+  
+  score_vector_to_nums <- function(scores){
+    nums <- scores
+    nums[nums == 2] <- AvgF
+    nums[nums == 3] <- AvgM
+    nums[nums == 4] <- AvgA
+    return(nums)
+  }#converts respective scores to numerical average
+  
+  return(score_vector_to_nums(scores = data))
+}#creates function to convert categorical data to means
+
+SFMA_to_min <- function(data){
+  nums <- data
+  nums[nums == 2] <- 2
+  nums[nums == 3] <- 11
+  nums[nums == 4] <- 101
+  return(nums)
+}#creates function to convert SFMA categories to minimum value for that category
+
+SFMA_to_exp <- function(data){
+  vec <-5.73^((data - 1)^1.28)
+  vec[is.na(vec)] <- 0
+  return(vec)
+}#creates function to exponentiation log abundance scores
+
+num_to_SFMA <- function(data){
+  cats <- data
+  cats[cats < .5] <- 0
+  cats[cats>=.5 & cats<1.5] <- 1
+  cats[cats>1 & cats <= 10] <- 2
+  cats[cats>10 & cats <= 100] <- 3
+  cats[cats> 100] <- 4
+  
+  return(cats)
+}#creates function to categorize count data into SFMA
+
+RMSE <- function(expected, observed){
+  return (sum((expected-observed)^2)/length(expected))^1/2
+}#function for calculating RMSE
+
+avg_error <- function(expected, observed){
+  return (mean(expected - observed))
+}#function for calculating avg_error
+
+r_square<- function(expected, observed){
+  return (1 - sum((expected - observed)^2)/sum((observed-mean(observed))^2))
+}#calculates r square
+
+store_fit <- function(cat_observed, expected, storage, i){
+  storage[i,3] <- RMSE(expected, cat_observed)
+  storage[i,4] <- r_square(expected, cat_observed)
+  storage[i,5] <- avg_error(expected, cat_observed)
+  return(storage)
+}#function to store fit metrics of model compared to categorized data
+
+store_real <- function(real_observed, expected, storage, i){
+  storage[i,6] <- RMSE(expected, real_observed)
+  storage[i,7] <- r_square(expected, real_observed)
+  storage[i,8] <- avg_error(expected, real_observed)
+  return(storage)
+}#function to store fit metrics of model compared to uncategorized data
+  
+
+min_gam_dat <- tibble( i = 1:100, points = 100*(1:100), RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+mean_gam_dat <- tibble( i = 1:100, points = 100*(1:100), RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+exp_gam_dat <- tibble( i = 1:100, points = 100*(1:100), RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+real_gam_dat <- tibble( i = 1:100, points = 100*(1:100), RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+#creates tables to store fit metrics of different models
+
+for(i in 1:100){
+  df1<-data.frame(x <- runif(100*i, min = -3, max = 3))
+  df1$y<-rnbinom(100*i,mu=exp(df1$x),size=10)
+  df1$c<- num_to_SFMA(df1$y)
+  df1$min <- SFMA_to_min(df1$c)
+  df1$mean <- SFMA_to_num(df1$c)
+  df1$exp <- SFMA_to_exp(df1$c)
+  #simulates data
+  
+  sim_gam_min<-gam(data = df1, min ~ x, family = "nb")
+  sim_gam_mean<-gam(data = df1, mean ~ x, family = "nb")
+  sim_gam_exp<-gam(data = df1, exp ~ x, family = "nb")
+  sim_gam_real<-gam(data = df1, y ~ x, family = "nb")
+  #fits GAMs to simulated data
+  
+  pred_sim_min <- predict.gam(object = sim_gam_min, type = "response")
+  pred_sim_mean <- predict.gam(object = sim_gam_mean, type = "response")
+  pred_sim_exp <- predict.gam(object = sim_gam_exp, type = "response")
+  pred_sim_real <- predict.gam(object = sim_gam_real, type = "response")
+  #calculates response values from fitted gams
+  
+  min_gam_dat <- store_fit(df1$min, pred_sim_min, min_gam_dat, i)
+  min_gam_dat <- store_real(df1$y, pred_sim_min, min_gam_dat, i)#stores data for min gam
+  mean_gam_dat <- store_fit(df1$mean, pred_sim_mean, mean_gam_dat, i)
+  mean_gam_dat <- store_real(df1$y, pred_sim_mean, mean_gam_dat, i)#stores data for mean gam
+  exp_gam_dat <- store_fit(df1$exp, pred_sim_exp, exp_gam_dat, i)
+  exp_gam_dat <- store_real(df1$y, pred_sim_exp, exp_gam_dat, i)#stores data for exp gam
+  real_gam_dat <- store_real(df1$y, pred_sim_real, real_gam_dat, i)#stores data for real gam
+}#for loop to iterate through different gam fits
+
+min_gam_dat$method <- "minimum value"
+mean_gam_dat$method <- "mean value"
+exp_gam_dat$method <- "exponential value"
+real_gam_dat$method <- "uncategorized"
+
+sim_gam_dat <- rbind(min_gam_dat, mean_gam_dat, exp_gam_dat, real_gam_dat)#collects data into one table for plotting
+
+ggplot(data = filter(sim_gam_dat, method == "minimum value"), mapping = aes(x = points, y = r_square_uncat, color = "minimum value vs uncategorized")) + geom_point() + 
+  geom_point( data = filter(sim_gam_dat, method == "mean value"), mapping = aes(x = points, y = r_square_uncat, color = "mean value vs uncategorized")) + 
+  geom_point( data = filter(sim_gam_dat, method == "uncategorized"), mapping = aes(x = points, y = r_square_uncat, color = "uncategorized fit")) + 
+  geom_point( data = filter(sim_gam_dat, method == "minimum value"), mapping = aes(x = points, y = r_square, color = "minimum value vs categorized")) + 
+  geom_point( data = filter(sim_gam_dat, method == "mean value"), mapping = aes(x = points, y = r_square, color = "mean value vs categorized")) +
+   xlab(label = "Number of data points") + ylab(label = "R-square")
+#creates plot of r-square
+
+ggplot(data = filter(sim_gam_dat, method != "exponential value"), mapping = aes(y = average_error_uncat, x = points, color = method)) + geom_point() + 
+  xlab(label = "Number of data points") + ylab(label = "Average error")
+#creates plot of average error
+
+ggplot(data = filter(sim_gam_dat, method != "exponential value"), mapping = aes(y = RMSE_uncat, x = points, color = method)) + geom_point() + 
+  xlab(label = "Number of data points") + ylab(label = "RMSE")
+#creates plot of RMSE
+
+summary(sim_gam_min)
+summary(sim_gam_mean)
+summary(sim_gam_exp)
+summary(sim_gam_real)#pulls out summary of last gam fit for each model type(fit to most datapoints)
+
+sim_fit_metrics<- sim_gam_dat %>%
+  group_by(method) %>%
+  summarise_all(.funs = list(mean, sd)) #creates table of statistics for fit metrics (mean and standard deviation)
+
+ggplot(data = df1, mapping = aes(x= c)) + #plotting bar chart of simulated categories
+  geom_bar() +
+  xlab("categories")+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+
+# #for loop that just models two best models repeatedly at a given sample size
+# mean_gam_dat2 <- tibble( i = 1:100, points = 5000, RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+# real_gam_dat2 <- tibble( i = 1:100, points = 5000, RMSE = 0, r_square = 0, average_error = 0, RMSE_uncat = 0, r_square_uncat = 0, average_error_uncat = 0)
+# real_gam_slope <- c()
+# real_gam_inter <- c()
+# mean_gam_slope <- c()
+# mean_gam_inter <- c()
+# 
+# for(i in 1:100){
+#   df2 <- data.frame(x <- runif(5000, min = -3, max = 3))
+#   df2$y<-rnbinom(5000,mu=exp(df2$x),size=10)
+#   df2$c<- num_to_SFMA(df2$y)
+#   df2$mean <- SFMA_to_num(df2$c)
+#   sim_gam_mean2<-gam(data = df2, mean ~ x, family = "nb")
+#   sim_gam_real2<-gam(data = df2, y ~ x, family = "nb")
+#   #simulates data and fits gams
+#   
+#   pred_sim_mean2 <- predict.gam(object = sim_gam_mean2, type = "response")
+#   pred_sim_real2 <- predict.gam(object = sim_gam_real2, type = "response")#stores responses of models
+#   
+#   mean_gam_dat2 <- store_fit(df2$mean, pred_sim_mean2, mean_gam_dat2, i)
+#   mean_gam_dat2 <- store_real(df2$y, pred_sim_mean2, mean_gam_dat2, i)#stores data for mean gam
+#   real_gam_dat2 <- store_real(df2$y, pred_sim_real2, real_gam_dat2, i)#stores data for real gam
+#   
+#   mean_gam_inter <- append(mean_gam_inter, sim_gam_mean2$coefficients[1])
+#   mean_gam_slope <- append(mean_gam_slope, sim_gam_mean2$coefficients[2])
+#   real_gam_inter <- append(real_gam_inter, sim_gam_real2$coefficients[1])
+#   real_gam_slope <- append(real_gam_slope, sim_gam_real2$coefficients[2])
+# }#for loop to determine variability of fit on 5000 data points
